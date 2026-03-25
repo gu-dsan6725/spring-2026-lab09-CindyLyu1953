@@ -1,10 +1,16 @@
 """
-Simple Strands Agent with DuckDuckGo and Braintrust Observability.
+Simple Strands Agent with DuckDuckGo, Context7 (MCP), and Braintrust Observability.
 
 This agent demonstrates:
 - DuckDuckGo web search tool
+- **Context7** MCP server (Problem 2): streamable HTTP at ``https://mcp.context7.com/mcp`` —
+  chosen for up-to-date library docs and code-oriented answers without hosting a custom MCP
+  server. Override with env ``CONTEXT7_MCP_URL`` if needed.
 - Braintrust observability using OpenTelemetry
 - Anthropic Claude Haiku via Strands
+
+MCP tools are supplied via :class:`strands.tools.mcp.MCPClient` as a ``ToolProvider`` so the
+connection stays open for the agent lifetime (required for tool calls after startup).
 """
 
 import asyncio
@@ -16,10 +22,11 @@ from typing import Optional
 from braintrust.otel import BraintrustSpanProcessor
 from ddgs import DDGS
 from dotenv import load_dotenv
+from mcp.client.streamable_http import streamablehttp_client
 from opentelemetry.sdk.trace import TracerProvider
 from strands import Agent
-from strands.telemetry import StrandsTelemetry
 from strands.tools.decorator import tool
+from strands.tools.mcp import MCPClient
 
 
 # Configure logging
@@ -43,6 +50,21 @@ def _get_env_var(
     if value is None:
         raise ValueError(f"Environment variable {key} not set")
     return value
+
+
+DEFAULT_CONTEXT7_MCP_URL = "https://mcp.context7.com/mcp"
+
+
+def create_context7_streamable_http_transport():
+    """Return Streamable HTTP transport for the Context7 MCP endpoint."""
+    url = os.getenv("CONTEXT7_MCP_URL", DEFAULT_CONTEXT7_MCP_URL).strip()
+    return streamablehttp_client(url)
+
+
+def _create_context7_mcp_client() -> MCPClient:
+    """MCP client for Context7 (documentation search). Keeps session alive via ToolProvider API."""
+    # First connection can be slow; allow a bit more than the default 30s on cold starts.
+    return MCPClient(create_context7_streamable_http_transport, startup_timeout=60)
 
 
 @tool
@@ -114,20 +136,27 @@ def _create_agent() -> Agent:
     """
     logger.info("Creating Strands agent")
 
-    # Set up observability
-    tracer_provider = _setup_observability()
-    telemetry = StrandsTelemetry(tracer_provider=tracer_provider)
+    # Set up observability (global TracerProvider for Braintrust export)
+    _setup_observability()
 
     # Get API key and set it in environment for LiteLLM
     anthropic_api_key = _get_env_var("ANTHROPIC_API_KEY")
     os.environ["ANTHROPIC_API_KEY"] = anthropic_api_key
 
     # Configure the agent with system prompt
-    system_prompt = """You are a helpful AI assistant with access to DuckDuckGo web search.
+    system_prompt = """You are a helpful AI assistant with these tools:
 
-Use the DuckDuckGo search tool to find current information, news, and answers to questions.
-Provide clear, accurate, and helpful responses based on the search results.
-Always cite your sources when using search results."""
+1. **duckduckgo_search** — breaking news, general web topics, and facts where broad search helps.
+2. **Context7 MCP tools** (names like ``resolve-library-id`` and ``query-docs``) — current
+   documentation and code-focused guidance for programming libraries and frameworks.
+
+When the user asks how to use a library (e.g. FastAPI async routes, React hooks, pandas APIs),
+use the Context7 tools: resolve the library id when the user did not give one in ``/org/project``
+form, then call ``query-docs`` with a specific question.
+
+For current events or non-API questions, prefer DuckDuckGo.
+
+Answer naturally; summarize documentation instead of dumping raw JSON. Cite or paraphrase sources."""
 
     # Create agent with Anthropic Claude 3 Haiku and DuckDuckGo tool
     # Use Anthropic model directly (not through Bedrock)
@@ -139,11 +168,14 @@ Always cite your sources when using search results."""
         max_tokens=4096
     )
 
-    # Create agent - observability is already configured globally via TracerProvider
+    context7_mcp = _create_context7_mcp_client()
+
+    # Create agent - observability is already configured globally via TracerProvider.
+    # Pass MCPClient as a ToolProvider so Strands keeps the MCP session alive for tool calls.
     agent = Agent(
         system_prompt=system_prompt,
         model=model,
-        tools=[duckduckgo_search]
+        tools=[duckduckgo_search, context7_mcp],
     )
 
     logger.info("Agent created successfully with Braintrust observability")
@@ -191,7 +223,7 @@ def main() -> None:
     print("="*80 + "\n")
 
     # Run interactive loop
-    print("Ask me anything! I can search the web with DuckDuckGo.")
+    print("Ask me anything! I can search the web (DuckDuckGo) and library docs (Context7 MCP).")
     print("Type 'quit' to exit.\n")
 
     while True:
