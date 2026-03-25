@@ -1,0 +1,36 @@
+User: Hi, I'm Alice. I'm a software engineer.
+Agent: Hi Alice! Nice to meet you. I've noted that you're a software engineer. If you have any coding questions, projects you'd like to discuss, or anything else I can help with, feel free to ask. What can I do for you today?
+
+User: I prefer Python for development.
+Agent: Great! I'll keep that in mind. If you ever want to discuss Python projects, libraries, best practices, or anything related to your development work, I'm here to help!
+
+User: What programming languages do I like?
+Agent: Based on what we've discussed, you prefer **Python** for development. That's the main language preference you've shared with me so far!
+
+User: I'm working on a FastAPI project.
+Agent: Feel free to ask if you need help with anything related to your FastAPI project—whether it's architecture, authentication, database integration, API design, or any other aspect of the development. I'm happy to assist!
+
+User: What have we discussed so far?
+Agent: Here's a summary of what we've discussed:
+
+1. **About you**: You're Alice, a software engineer.
+2. **Your preferences**: You prefer Python for development.
+3. **Your current project**: You're working on a FastAPI project.
+
+That's the main information we've covered so far. Feel free to tell me more about your FastAPI project or ask any questions you might have!
+
+User: What do you remember about me?
+Agent: Based on my memory, here's what I know about you:
+
+- **Name**: Alice
+- **Profession**: You're a software engineer
+- **Programming preference**: You prefer Python for development
+- **Current project**: You're working on a FastAPI project
+
+Feel free to share more about yourself or your projects if you'd like me to know anything else!
+
+User: What project am I working on?
+Agent: Based on what I remember, you're working on a **FastAPI project**.
+
+FastAPI is a great Python framework for building APIs! If you'd like to discuss any aspects of your project—whether it's architecture, authentication, database integration, API design, or anything else—I'm happy to help!
+

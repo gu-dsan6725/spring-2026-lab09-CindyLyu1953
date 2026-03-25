@@ -1,0 +1,11 @@
+User: Hi, I'm Carol. I'm a data scientist.
+Agent: Great! I've noted that you're a data scientist. How can I help you today? Whether it's advice on data analysis, machine learning projects, or anything else in your work, I'm here to assist!
+
+User: What programming languages do I like?
+Agent: I don't have any information about your programming language preferences yet. You haven't mentioned them to me before. What languages do you prefer to work with as a data scientist?
+
+User: Do you know what Alice prefers?
+Agent: I don't have any information about Alice or her preferences. My memories are specific to our conversations—I only have access to what we've discussed together or what you've explicitly asked me to remember.
+
+Is Alice someone you'd like to tell me about, or were you asking about a different context?
+

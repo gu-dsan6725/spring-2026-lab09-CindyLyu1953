@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import (
     Any,
     Dict,
@@ -545,11 +546,32 @@ class Agent:
             raise
 
 
+    @staticmethod
+    def _join_content_blocks(content: List[Any]) -> str:
+        """Concatenate human-readable text from Strands message content blocks."""
+        text_parts: List[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if "text" in block:
+                text_parts.append(block["text"])
+            elif "citationsContent" in block:
+                cc = block["citationsContent"]
+                if isinstance(cc, dict) and "content" in cc:
+                    for c in cc["content"]:
+                        if isinstance(c, dict) and "text" in c:
+                            text_parts.append(c["text"])
+        return "\n".join(text_parts).strip()
+
     def _extract_response_text(
         self,
         result
     ) -> str:
         """Extract text response from Strands agent result.
+
+        After tool use, the final AgentResult may only include the last assistant
+        slice; we prefer the full turn by joining all assistant messages after
+        the latest user message in ``self.agent.messages``.
 
         Args:
             result: Strands agent result object
@@ -557,14 +579,47 @@ class Agent:
         Returns:
             Extracted text response
         """
-        content = result.message.get("content", [])
-        text_parts = []
+        from_result = self._join_content_blocks(result.message.get("content", []))
+        try:
+            from_str = str(result).strip()
+        except Exception:
+            from_str = ""
 
-        for block in content:
-            if isinstance(block, dict) and "text" in block:
-                text_parts.append(block["text"])
+        strands_agent = getattr(self, "agent", None)
+        msgs = getattr(strands_agent, "messages", None) if strands_agent is not None else None
+        combined = ""
+        if msgs:
+            last_user_idx: Optional[int] = None
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get("role") == "user":
+                    last_user_idx = i
+                    break
+            if last_user_idx is not None:
+                turn_parts: List[str] = []
+                for j in range(last_user_idx + 1, len(msgs)):
+                    if msgs[j].get("role") == "assistant":
+                        piece = self._join_content_blocks(msgs[j].get("content", []))
+                        if piece:
+                            turn_parts.append(piece)
+                combined = "\n".join(turn_parts).strip()
 
-        return " ".join(text_parts).strip()
+        for candidate in (combined, from_result, from_str):
+            cleaned = self._strip_tool_echo_lines(candidate)
+            if cleaned:
+                return cleaned
+        return ""
+
+    @staticmethod
+    def _strip_tool_echo_lines(text: str) -> str:
+        """Remove Strands-style tool echo lines from assistant text."""
+        if not text:
+            return ""
+        lines = [
+            ln
+            for ln in text.splitlines()
+            if not re.match(r"^\s*Tool\s*#\d+\s*:\s*\S+", ln)
+        ]
+        return "\n".join(lines).strip()
 
 
     def _store_conversation_async(

@@ -75,9 +75,11 @@ Integration with Agent:
 
 import json
 import logging
-import os
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import (
     Any,
+    DefaultDict,
     Dict,
     List,
     Optional,
@@ -111,6 +113,7 @@ class MemoryManager:
         user_id: User identifier for memory association
         memory: Backend memory instance (currently Mem0 cloud platform MemoryClient)
     """
+    _global_local_memories: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
 
     def __init__(
         self,
@@ -143,8 +146,29 @@ class MemoryManager:
 
         # Initialize Mem0 cloud client (synchronous initialization)
         self.memory = MemoryClient(api_key=api_key)
+        # In-process mirror for deterministic recall in the current API runtime.
+        self._local_memories = MemoryManager._global_local_memories
 
         logger.info("Mem0 cloud client initialized successfully")
+
+    def _append_local_memory(
+        self,
+        user_id: str,
+        content: str,
+        run_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Keep a local fallback memory copy to avoid cloud indexing latency."""
+        self._local_memories[user_id].append(
+            {
+                "id": f"local-{len(self._local_memories[user_id]) + 1}",
+                "memory": content,
+                "score": 1.0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "metadata": metadata or {},
+                "run_id": run_id,
+            }
+        )
 
 
     async def insert(
@@ -200,12 +224,21 @@ class MemoryManager:
             if run_id:
                 full_metadata["run_id"] = run_id
 
-            # Store in Mem0 cloud platform with user_id and run_id as first-class parameters
+            self._append_local_memory(
+                user_id=user_id,
+                content=content,
+                run_id=run_id,
+                metadata=full_metadata,
+            )
+
+            # Store in Mem0 cloud platform with user_id and run_id as first-class parameters.
+            # Use sync mode so subsequent search_memory calls see the new fact in the same session.
             self.memory.add(
                 content,
                 user_id=user_id,
                 run_id=run_id,
-                metadata=full_metadata
+                metadata=full_metadata,
+                async_mode=False,
             )
 
             logger.info(f"Memory stored for user={user_id} with context (agent={agent_id}, session={run_id})")
@@ -286,41 +319,18 @@ class MemoryManager:
                 f"(limit={limit}, searching across ALL sessions)"
             )
 
-            # Get all run_ids for this user for cross-session recall
-            # Mem0 stores memories under run_id, so we need to query all runs
-            try:
-                users_data = self.memory.users()
-                # Filter for runs (type='run') that belong to this user
-                # Runs are typically named like: user_id-session-N
-                user_runs = [u['name'] for u in users_data.get('results', [])
-                           if u.get('type') == 'run' and u['name'].startswith(user_id + '-')]
-                logger.debug(f"Found {len(user_runs)} runs for user={user_id}: {user_runs}")
-            except Exception as e:
-                logger.warning(f"Could not get user runs, falling back to user_id filter: {e}")
-                user_runs = None
+            # Mem0 v2 search requires structured filters (see
+            # https://docs.mem0.ai/platform/features/v2-memory-filters).
+            # Scope by user_id only (do not add agent_id: it over-constrains and returns no hits).
+            and_clauses: List[Dict[str, Any]] = [{"user_id": user_id}]
+            if metadata_filters:
+                and_clauses.append(metadata_filters)
+            filters: Dict[str, Any] = {"AND": and_clauses}
 
-            # Build filters for Mem0 cloud platform
-            # Use OR logic across all user's run_ids for cross-session recall
-            if user_runs and len(user_runs) > 0:
-                filters = {
-                    'OR': [{'run_id': run} for run in user_runs]
-                }
-            else:
-                # Fallback to user_id filter (may not work with current Mem0 API)
-                filters = {"user_id": user_id}
-
-            if agent_id and not user_runs:
-                filters["agent_id"] = agent_id
-
-            # Combine with any additional metadata filters
-            if metadata_filters and not user_runs:
-                filters.update(metadata_filters)
-
-            # Search using Mem0 cloud platform with filters
             results = self.memory.search(
                 query=query,
                 filters=filters,
-                limit=limit
+                top_k=limit,
             )
 
             # DEBUG: Log raw results from Mem0
@@ -331,6 +341,21 @@ class MemoryManager:
             if isinstance(results, dict):
                 results = results.get("results", [])
                 logger.debug(f"Extracted results list: {results}")
+
+            if not results:
+                # Semantic search can miss; use one quick cloud fallback.
+                logger.info("Vector search returned no hits; falling back to recent cloud memories")
+                fb = self.memory.get_all(filters={"user_id": user_id})
+                if isinstance(fb, dict):
+                    results = fb.get("results", fb.get("memories", []))
+                else:
+                    results = fb if isinstance(fb, list) else []
+                results = results[:limit]
+
+            if not results:
+                # Deterministic fallback for the current process runtime.
+                logger.info("Cloud recall empty; falling back to local memory mirror")
+                results = self._local_memories.get(user_id, [])[:limit]
 
             if not results:
                 logger.info("No memories found for query")
@@ -480,6 +505,9 @@ class MemoryManager:
                 else:
                     all_memories = result if isinstance(result, list) else []
 
+            if not all_memories:
+                all_memories = self._local_memories.get(user_id, []).copy()
+
             if limit and limit > 0:
                 all_memories = all_memories[:limit]
                 logger.info(f"Limited results to {limit} memories for user={user_id}")
@@ -529,6 +557,7 @@ class MemoryManager:
                     # If mem is a string, it might be the memory ID itself
                     logger.debug(f"Skipping string memory entry: {mem[:50]}...")
 
+            self._local_memories.pop(user_id, None)
             logger.info(f"Cleared {memory_count} memories successfully")
 
         except Exception as e:
@@ -584,7 +613,14 @@ class MemoryManager:
                 conversation_text,
                 user_id=user_id,
                 run_id=run_id,
-                metadata=full_metadata
+                metadata=full_metadata,
+                async_mode=False,
+            )
+            self._append_local_memory(
+                user_id=user_id,
+                content=conversation_text,
+                run_id=run_id,
+                metadata=full_metadata,
             )
 
             logger.debug(f"Conversation stored for user={user_id} with context (agent={agent_id}, session={run_id})")
